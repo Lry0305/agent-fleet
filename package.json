@@ -1,0 +1,18 @@
+{
+  "name": "agent-pay",
+  "version": "1.0.0",
+  "description": "AgentPay — Decentralized Payment System for AI Agents",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy": "hardhat run scripts/deploy.js --network localhost",
+    "setup": "python3 agents/setup.py",
+    "demo": "python3 agents/run_demo.py",
+    "dashboard": "streamlit run app.py"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "hardhat": "^2.22.0"
+  }
+}
