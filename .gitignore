@@ -1,36 +1,8 @@
-# Python
-__pycache__/
-*.py[cod]
-*.so
-*.egg-info/
-dist/
-build/
-
-# Node
-node_modules/
-package-lock.json
-
-# Hardhat artifacts
-artifacts/
-cache/
-typechain-types/
-
-# 数据库
-backend/agentpay.db
-
-# 本地缓存
-.venv/
-venv/
+# Environment
 .env
+__pycache__/
+*.pyc
+node_modules/
 
-# macOS
-.DS_Store
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# ngrok log
-*.ngrok.log
+# WorkBuddy local cache
+.workbuddy/

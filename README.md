@@ -46,7 +46,7 @@
 
 ## 2. 核心架构
 
-![Architecture](./agentpay_architecture_v2.png)
+![Architecture](./agentpay_architecture.png)
 
 **一句话总结**：用户或 Agent 通过界面发起操作 → 后端路由处理 → 双轨写入（SQLite + Ethereum）→ 看板实时更新。
 
@@ -114,7 +114,7 @@ agent-pay/
 │   ├── agentpay_skill/cua_runner.py  # macOS 桌面自动化
 │   └── skills/                    # Provider 技能模块
 │
-├── agentpay_architecture_v2.png   # 架构图
+├── agentpay_architecture.svg          # 架构图
 ├── app.py                         # Streamlit 前端
 └── run_all.sh
 ```
@@ -208,6 +208,17 @@ def detect_complexity(text):
 
 飞书消息触发：根据关键词自动计算价格。
 
+### 飞书机器人 — 真实运行示例
+
+下面这张截图展示了「每日投资早报」飞书机器人的实际运行效果：
+
+- 用户发送「腾讯怎么样」→ 系统检测到简单查询（×0.4），自动锁定 2 credits，机器人回复腾讯 0700.HK 的技术面分析（MACD 金叉、RSI 62、布林带突破、成交量放量），附结论「短线看多 📈」和链上 tx_hash
+- 用户发送「特斯拉这只股票怎么样」→ 同样触发简单查询定价，机器人回复 TSLA 技术面分析，附「强势看多 🚀」和链上 tx_hash
+
+整个过程零人工介入：自然语言 → 关键词定价 → 链上锁仓 → 执行分析 → 确认结算 → 回复结果。
+
+![飞书机器人](./screenshot/feishu_bot.png)
+
 ---
 
 ## 8. 双轨结算
@@ -233,6 +244,12 @@ Consumer 确认 (POST /api/billing/confirm/{tx_id})
     └─ Track 2: release_funds_on_chain()
                  合约释放 0.05 ETH → Provider 钱包
 ```
+
+### 实时演示
+
+下面这张截图展示了真实运行中的实时演示页——左侧是登录的飞书 Consumer 账户，144 credits 余额；中间展示了「每日投资早报」Consumer 把 ETH 锁入 EscrowPayment 智能合约后，「技术面分析大师」Provider 确认交付的完整交易流。下方还有双方的实时余额和最新交易流水。
+
+![实时演示页](./screenshot/dashbord_1.png)
 
 ### 合约状态机
 
@@ -372,6 +389,12 @@ Streamlit Dashboard (`http://localhost:8501`)：
 | 日志 | 操作记录 |
 
 侧边栏支持登录（API Key / 飞书 / OpenClaw）、充值、退出。
+
+### 交易看板示例
+
+下面是「交易看板」页面的实际截图，顶部详细解释了两条轨道的分工（Track 1 SQLite 即时记账、Track 2 智能合约锁仓释放），中间用流程图展示了 Consumer → EscrowPayment → Provider 的去中心化交易过程，底部是最近 3 笔交易记录，每笔都附带链上 tx_hash 供验证。
+
+![交易看板](./screenshot/dashbord_2.png)
 
 ---
 

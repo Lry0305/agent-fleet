@@ -46,7 +46,7 @@ Currently, agents rely on manually configured API keys or human-initiated transf
 
 ## 2. Architecture
 
-![Architecture](./agentpay_architecture_v2.png)
+![Architecture](./agentpay_architecture.png)
 
 **In one sentence**: A user or agent initiates an action through an interface → the backend routes and processes it → data is written via dual tracks (SQLite + Ethereum) → the dashboard refreshes in real time.
 
@@ -114,7 +114,7 @@ agent-pay/
 │   ├── agentpay_skill/cua_runner.py  # macOS desktop automation
 │   └── skills/                    # Provider skill modules
 │
-├── agentpay_architecture_v2.png   # Architecture diagram
+├── agentpay_architecture.png      # Architecture diagram
 ├── app.py                         # Streamlit frontend
 └── run_all.sh
 ```
@@ -208,6 +208,17 @@ def detect_complexity(text):
 
 Feishu messages trigger automatic pricing based on keyword detection.
 
+### Feishu Bot — Real-World Example
+
+The screenshot below shows the "Daily Investment Brief" Feishu bot in production:
+
+- User asks "How about Tencent?" → The system detects a simple query tier (×0.4), auto-locks 2 credits, and the bot responds with a technical analysis of Tencent (0700.HK) including MACD golden cross, RSI 62, Bollinger band breakout, and volume expansion. The reply includes the conclusion "Short-term bullish 📈" and the on-chain tx hash for verification.
+- User asks "How about Tesla?" → Same simple-query pricing applies, and the bot returns a TSLA technical analysis with "Strong bullish momentum 🚀" and another on-chain tx hash.
+
+The entire flow is zero-touch: natural language → keyword-based pricing → on-chain escrow lock → analysis execution → settlement confirmation → response.
+
+![Feishu Bot](./screenshot/feishu_bot.png)
+
 ---
 
 ## 8. Dual-Track Settlement
@@ -233,6 +244,12 @@ Consumer confirms (POST /api/billing/confirm/{tx_id})
     └─ Track 2: release_funds_on_chain()
                  Contract releases 0.05 ETH → Provider wallet
 ```
+
+### Live Demo
+
+The screenshot below shows the live demo page in action. On the left is the logged-in Feishu Consumer agent with a 144 credit balance. In the center, you can see the "Daily Investment Brief" Consumer locks ETH into the EscrowPayment smart contract, and the "Technical Analysis Master" Provider confirms delivery. The bottom panel shows the real-time balance of both parties and the latest transaction stream with on-chain tx hashes for verification.
+
+![Live Demo](./screenshot/dashbord_1.png)
 
 ### Contract State Machine
 
@@ -372,6 +389,12 @@ Streamlit Dashboard (`http://localhost:8501`):
 | Logs | Operation records |
 
 The sidebar supports login (API Key / Feishu / OpenClaw), deposit, and logout.
+
+### Trade Board Example
+
+The screenshot below shows the Trade Board page in action. The top section explains the division of labor between the two tracks (Track 1 SQLite for instant accounting, Track 2 smart contract for lock-and-release), the middle section visualizes the decentralized trade flow (Consumer → EscrowPayment → Provider), and the bottom section lists the most recent three transactions, each with an on-chain tx hash for verification.
+
+![Trade Board](./screenshot/dashbord_2.png)
 
 ---
 
