@@ -244,9 +244,14 @@ def _render_dispatch_box():
         providers = _active_providers()
 
         named_agents = [p for p in providers if p.get("name") in picked_agents]
+        # 去重：如果选中的服务名称正好是某个已经被直接指定的 agent 自己的 service_name，
+        # 就不再额外派一个"按服务名称匹配"的 task 了——不然同一个 agent 会被派两次
+        # （一次是直接指定，一次是服务名称匹配到了它自己），这是之前的 bug。
+        covered_service_names = {a.get("service_name") for a in named_agents if a.get("service_name")}
+        named_skills = [s for s in picked_skills if s not in covered_service_names]
 
-        if named_agents or picked_skills:
-            reply = _dispatch_parallel(named_agents, picked_skills, prompt)
+        if named_agents or named_skills:
+            reply = _dispatch_parallel(named_agents, named_skills, prompt)
         else:
             matched = _match_providers(prompt, providers)
             reply = _dispatch_matched(matched, providers, prompt)
