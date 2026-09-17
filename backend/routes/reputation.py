@@ -44,8 +44,8 @@ def rate_transaction(
     - 一笔交易只能打分一次
     - 评分范围 1-5
     """
-    if agent.role != AgentRole.CONSUMER:
-        raise HTTPException(status_code=403, detail="只有 Consumer 可以评分")
+    if agent.role not in (AgentRole.CONSUMER, AgentRole.BOSS):
+        raise HTTPException(status_code=403, detail="只有交易的付款方（Consumer/Boss）可以评分")
 
     tx = db.query(TransactionModel).filter(TransactionModel.id == tx_id).first()
     if not tx:
@@ -135,8 +135,8 @@ def rate_provider_onchain(
     链上评分：在 Reputation 合约上记录评分 + 同步到 SQLite。
     必须是已确认交易的 Consumer。
     """
-    if agent.role != AgentRole.CONSUMER:
-        raise HTTPException(status_code=403, detail="只有 Consumer 可以评分")
+    if agent.role not in (AgentRole.CONSUMER, AgentRole.BOSS):
+        raise HTTPException(status_code=403, detail="只有交易的付款方（Consumer/Boss）可以评分")
 
     tx = db.query(TransactionModel).filter(TransactionModel.id == tx_id).first()
     if not tx:

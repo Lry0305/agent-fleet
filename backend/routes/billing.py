@@ -25,15 +25,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from datetime import datetime
 from typing import Optional
+import base64
 
 from backend.database import get_db
 from backend.models import (
-    AgentModel, AgentRole, TransactionModel, ServiceModel,
+    AgentModel, AgentRole, TransactionModel, ServiceModel, ArtifactModel,
     TransactionStatus,
 )
-from backend.auth import verify_api_key
-from backend.config import CREDIT_TO_ETH_RATE
-from backend.chain import chain_available, lock_funds_on_chain, release_funds_on_chain, get_onchain_balance
+from backend.auth import verify_api_key, verify_boss
+from backend.config import CREDIT_TO_ETH_RATE, FUNDER_PRIVATE_KEY
+from backend.chain import (
+    chain_available, lock_funds_on_chain, release_funds_on_chain,
+    deliver_result_on_chain, get_onchain_balance,
+)
+from backend.routes.artifacts import store_content
 from eth_account import Account
 from web3 import Web3
 
@@ -55,6 +60,12 @@ class DepositRequest(BaseModel):
     from_address: Optional[str] = Field(default="", description="转出方钱包地址")
 
 
+class DeliverRequest(BaseModel):
+    data_b64: str = Field(..., description="交付物内容 base64")
+    content_type: str = Field(default="application/json")
+    filename: str = Field(default="")
+
+
 class TransactionResponse(BaseModel):
     id: str
     consumer_id: str
@@ -74,6 +85,83 @@ class TransactionResponse(BaseModel):
 def _compute_balance(agent: AgentModel) -> float:
     """余额 = 初始额度 + 总收入 - 总支出 (不可手动修改)"""
     return agent.total_earned - agent.total_spent
+
+
+def create_locked_transaction(
+    db: Session, consumer: AgentModel, provider: AgentModel,
+    amount: float, service_name: str = "",
+) -> TransactionModel:
+    """锁仓：扣 consumer 余额 + 链上锁 ETH + 建交易记录（FUND_LOCKED）。
+
+    pay 端点与编排层（jobs 调度器派发 task 时）共用同一份逻辑。
+    """
+    consumer.total_spent += amount
+
+    chain_tx_hash, chain_request_id = "", 0
+    if chain_available() and consumer.encrypted_private_key and provider.eth_address:
+        try:
+            info = lock_funds_on_chain(consumer.encrypted_private_key, provider.eth_address, amount)
+            if info:
+                chain_tx_hash, chain_request_id = info["tx_hash"], info["request_id"]
+        except Exception:
+            # 链上失败不阻塞 off-chain 流程
+            pass
+
+    tx = TransactionModel(
+        consumer_id=consumer.id,
+        provider_id=provider.id,
+        service_name=service_name,
+        amount=amount,
+        status=TransactionStatus.FUND_LOCKED,
+        chain_tx_hash=chain_tx_hash,
+        chain_request_id=chain_request_id,
+    )
+    db.add(tx)
+    return tx
+
+
+def confirm_and_release(
+    db: Session, consumer: AgentModel, provider: AgentModel, tx: TransactionModel,
+    settle_amount: float = None,
+) -> str:
+    """确认交付：provider 入账 + 链上释放 ETH。返回 chain_confirm_hash。
+
+    confirm 端点与编排层（task 完成自动结算）共用。
+
+    settle_amount：按 token 实际结算的价（≤ tx.amount，tx.amount 是派单时锁仓的上限）。
+    留空就是老路径——直接全额释放 tx.amount（/api/billing/confirm/{tx} 手动确认走这条，
+    没有"任务交付物"这个概念可以拿来数 token，只能按锁仓额全给）。传了就按真实用量结算，
+    锁多了的部分退还给 consumer——总量守恒，不会凭空多退或多扣。
+    """
+    amount = tx.amount if settle_amount is None else min(settle_amount, tx.amount)
+    if amount < tx.amount:
+        consumer.total_spent -= (tx.amount - amount)  # 退还没用完的锁仓余量
+    provider.total_earned += amount
+    tx.amount = amount  # 落库成真实结算价，交易记录里看到的就是最终真花的钱
+
+    chain_confirm_hash = ""
+    if (
+        chain_available()
+        and consumer.encrypted_private_key
+        and provider.encrypted_private_key
+        and tx.chain_tx_hash
+    ):
+        try:
+            if tx.status == TransactionStatus.FUND_LOCKED:
+                # 尚未交付 → 补 deliverResult 存证（旧流程兜底）
+                data_hash = tx.data_hash or Web3.keccak(text=tx.id).hex()
+                deliver_result_on_chain(provider.encrypted_private_key, tx.chain_request_id, data_hash)
+            r = release_funds_on_chain(consumer.encrypted_private_key, tx.chain_request_id)
+            if r:
+                chain_confirm_hash = r["tx_hash"]
+        except Exception:
+            pass
+
+    tx.status = TransactionStatus.CONFIRMED
+    if chain_confirm_hash:
+        tx.chain_tx_hash = chain_confirm_hash
+    tx.updated_at = datetime.utcnow()
+    return chain_confirm_hash
 
 
 # ── 路由 ──
@@ -110,8 +198,8 @@ def pay_for_service(
     3. 创建交易记录
     4. 余额暂存 (Provider 确认后转入)
     """
-    if agent.role != AgentRole.CONSUMER:
-        raise HTTPException(status_code=403, detail="只有 Consumer 可以发起支付")
+    if agent.role not in (AgentRole.CONSUMER, AgentRole.BOSS):
+        raise HTTPException(status_code=403, detail="只有发起 Agent / 老板可以发起支付")
 
     # 校验 Provider
     provider = db.query(AgentModel).filter(
@@ -136,39 +224,7 @@ def pay_for_service(
         if service:
             service_name = service.name
 
-    # ── 双轨结算 ──
-    # Track 1: off-chain credits (total_spent 增加，余额自然减少)
-    agent.total_spent += req.amount
-
-    # Track 2: 链上 ETH 锁定 (去信任化保证)
-    chain_tx_hash = ""
-    chain_request_id = 0
-    chain_info = None
-    if chain_available() and agent.encrypted_private_key and provider.eth_address:
-        try:
-            chain_info = lock_funds_on_chain(
-                agent.encrypted_private_key,
-                provider.eth_address,
-                req.amount,
-            )
-            if chain_info:
-                chain_tx_hash = chain_info["tx_hash"]
-                chain_request_id = chain_info["request_id"]
-        except Exception as e:
-            # 链上失败不阻塞 off-chain 流程
-            pass
-
-    # 创建交易
-    tx = TransactionModel(
-        consumer_id=agent.id,
-        provider_id=provider.id,
-        service_name=service_name,
-        amount=req.amount,
-        status=TransactionStatus.FUND_LOCKED,
-        chain_tx_hash=chain_tx_hash,
-        chain_request_id=chain_request_id,
-    )
-    db.add(tx)
+    tx = create_locked_transaction(db, agent, provider, req.amount, service_name)
     db.commit()
     db.refresh(tx)
 
@@ -179,9 +235,9 @@ def pay_for_service(
         "provider_name": provider.name,
         "service_name": service_name,
         "status": tx.status.value if isinstance(tx.status, TransactionStatus) else tx.status,
-        "chain_tx_hash": chain_tx_hash,
-        "chain_locked": chain_info is not None,
-        "eth_locked": chain_info["amount_eth"] if chain_info else 0,
+        "chain_tx_hash": tx.chain_tx_hash,
+        "chain_locked": bool(tx.chain_tx_hash),
+        "eth_locked": round(req.amount * CREDIT_TO_ETH_RATE, 6) if tx.chain_tx_hash else 0,
     }
 
 
@@ -201,7 +257,7 @@ def confirm_delivery(
     if tx.consumer_id != agent.id:
         raise HTTPException(status_code=403, detail="只有 Consumer 可以确认")
 
-    if tx.status != TransactionStatus.FUND_LOCKED:
+    if tx.status not in (TransactionStatus.FUND_LOCKED, TransactionStatus.DELIVERED):
         raise HTTPException(status_code=400, detail="该交易不处于待确认状态")
 
     # 转入 Provider
@@ -209,27 +265,7 @@ def confirm_delivery(
     if not provider:
         raise HTTPException(status_code=404, detail="Provider 不存在")
 
-    # ── Track 1: off-chain credits (只改 total_earned，余额自动计算) ──
-    provider.total_earned += tx.amount
-
-    # ── Track 2: 链上释放 ETH → Provider ──
-    chain_confirm_hash = ""
-    if chain_available() and agent.encrypted_private_key and tx.chain_request_id:
-        try:
-            chain_result = release_funds_on_chain(
-                agent.encrypted_private_key,
-                tx.chain_request_id,
-            )
-            if chain_result:
-                chain_confirm_hash = chain_result["tx_hash"]
-        except Exception:
-            pass
-
-    tx.status = TransactionStatus.CONFIRMED
-    if chain_confirm_hash:
-        tx.chain_tx_hash = chain_confirm_hash
-    tx.updated_at = datetime.utcnow()
-
+    chain_confirm_hash = confirm_and_release(db, agent, provider, tx)
     db.commit()
 
     return {
@@ -237,6 +273,53 @@ def confirm_delivery(
         "transaction_id": tx.id,
         "provider_new_balance": _compute_balance(provider),
         "chain_confirm_hash": chain_confirm_hash,
+    }
+
+
+@router.post("/deliver/{tx_id}")
+def deliver_result(
+    tx_id: str,
+    req: DeliverRequest,
+    agent: AgentModel = Depends(verify_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Provider 交付：存交付物（内容寻址）→ data_hash = cid → 链上存证 → status=DELIVERED。
+    交付物 cid 与链上 dataHash、交易的 data_hash 三者一致。
+    """
+    tx = db.query(TransactionModel).filter(TransactionModel.id == tx_id).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="交易不存在")
+    if tx.provider_id != agent.id:
+        raise HTTPException(status_code=403, detail="只有 Provider 可以交付")
+    if tx.status not in (TransactionStatus.FUND_LOCKED, TransactionStatus.DELIVERED):
+        raise HTTPException(status_code=400, detail="该交易不接受交付")
+
+    try:
+        data = base64.b64decode(req.data_b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="data_b64 不是合法 base64")
+
+    cid = store_content(db, agent.id, data, req.content_type, req.filename)
+    tx.data_hash = cid
+    tx.status = TransactionStatus.DELIVERED
+    tx.updated_at = datetime.utcnow()
+
+    chain_deliver_hash = ""
+    if chain_available() and agent.encrypted_private_key and tx.chain_tx_hash:
+        try:
+            r = deliver_result_on_chain(agent.encrypted_private_key, tx.chain_request_id, cid)
+            if r:
+                chain_deliver_hash = r["tx_hash"]
+        except Exception:
+            pass
+
+    db.commit()
+    return {
+        "message": "交付完成，内容哈希已上链存证",
+        "cid": cid,
+        "data_hash": cid,
+        "chain_deliver_hash": chain_deliver_hash,
     }
 
 
@@ -307,18 +390,29 @@ def list_transactions(
 
 
 @router.get("/stats")
-def platform_stats(db: Session = Depends(get_db)):
-    """平台统计：总 Agent 数、总交易数、总交易额"""
-    total_agents = db.query(AgentModel).count()
-    total_providers = db.query(AgentModel).filter(AgentModel.role == AgentRole.PROVIDER).count()
-    total_consumers = db.query(AgentModel).filter(AgentModel.role == AgentRole.CONSUMER).count()
-    total_txs = db.query(TransactionModel).count()
-    confirmed_txs = db.query(TransactionModel).filter(TransactionModel.status == TransactionStatus.CONFIRMED).count()
+def platform_stats(boss: AgentModel = Depends(verify_boss), db: Session = Depends(get_db)):
+    """老板名下的统计：只统计这个老板自己创建的 agent + 名下（作为 consumer/provider）的结算流水。
 
-    # 总交易额
+    之前这里是不分老板的全平台聚合（db.query(AgentModel).count() 之类，没有按 boss_id 过滤），
+    会把其他账号、以及测试脚本跑出来的数据也算进去——看起来就像是假的模拟数据，其实是统计口径的 bug。
+    """
+    my_agents = db.query(AgentModel).filter(AgentModel.boss_id == boss.id).all()
+    total_agents = len(my_agents)
+    total_providers = sum(1 for a in my_agents if a.role == AgentRole.PROVIDER)
+    total_consumers = sum(1 for a in my_agents if a.role == AgentRole.CONSUMER)
+
+    owned_ids = [boss.id] + [a.id for a in my_agents]
+    tx_q = db.query(TransactionModel).filter(
+        TransactionModel.consumer_id.in_(owned_ids) | TransactionModel.provider_id.in_(owned_ids)
+    )
+    total_txs = tx_q.count()
+    confirmed_txs = tx_q.filter(TransactionModel.status == TransactionStatus.CONFIRMED).count()
+
+    # 总交易额（只算老板名下的，且只算已确认的）
     from sqlalchemy import func
     total_volume = db.query(func.sum(TransactionModel.amount)).filter(
-        TransactionModel.status == TransactionStatus.CONFIRMED
+        (TransactionModel.consumer_id.in_(owned_ids) | TransactionModel.provider_id.in_(owned_ids)),
+        TransactionModel.status == TransactionStatus.CONFIRMED,
     ).scalar() or 0
 
     return {
@@ -432,8 +526,7 @@ def deposit_credits(
             try:
                 from backend.chain import _get_w3
                 w3 = _get_w3()
-                funder_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-                funder = Account.from_key(funder_key)
+                funder = Account.from_key(FUNDER_PRIVATE_KEY)
                 nonce = w3.eth.get_transaction_count(funder.address)
                 tx = {
                     "from": funder.address,
@@ -444,7 +537,7 @@ def deposit_credits(
                     "nonce": nonce,
                     "chainId": 31337,
                 }
-                signed = w3.eth.account.sign_transaction(tx, funder_key)
+                signed = w3.eth.account.sign_transaction(tx, FUNDER_PRIVATE_KEY)
                 tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
                 receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
                 chain_tx_hash = receipt.transactionHash.hex()

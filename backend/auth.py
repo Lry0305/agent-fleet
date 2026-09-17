@@ -12,7 +12,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.models import AgentModel, AuthMethod
+from backend.models import AgentModel, AgentRole, AuthMethod
 
 security = HTTPBearer(auto_error=False)
 
@@ -78,6 +78,17 @@ def verify_agent(
 
 # 兼容旧代码的别名
 verify_api_key = verify_agent
+
+
+def verify_boss(
+    credentials: HTTPAuthorizationCredentials | None = Security(security),
+    db: Session = Depends(get_db),
+) -> AgentModel:
+    """老板专属依赖：先 verify_agent 再校验 role==boss。"""
+    agent = verify_agent(credentials, db)
+    if agent.role != AgentRole.BOSS:
+        raise HTTPException(status_code=403, detail="只有老板可以执行此操作")
+    return agent
 
 
 def verify_webhook_signature(signature: str, body: str, secret: str) -> bool:

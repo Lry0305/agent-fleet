@@ -92,14 +92,19 @@ def lock_funds_on_chain(
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
 
-        # 解析 requestId
-        request_id = 0
+        # 解析 requestId（事件解析失败时用 getRequestCount()-1 兜底）
+        request_id = None
         try:
             logs = escrow.events.ServiceRequested().process_receipt(receipt)
             if logs:
                 request_id = logs[0]["args"]["requestId"]
-        except:
+        except Exception:
             pass
+        if request_id is None:
+            try:
+                request_id = escrow.functions.getRequestCount().call() - 1
+            except Exception:
+                request_id = 0
 
         return {
             "tx_hash": tx_hash.hex(),
@@ -140,6 +145,43 @@ def release_funds_on_chain(
         return {"tx_hash": tx_hash.hex()}
     except Exception as e:
         print(f"[Chain] 释放资金失败: {e}")
+        return None
+
+
+def deliver_result_on_chain(
+    provider_private_key: str,
+    chain_request_id: int,
+    data_hash_hex: str,
+) -> dict | None:
+    """
+    Provider 交付结果 → 提交内容哈希上链存证。
+    confirmDelivery 要求 state == Delivered，所以必须先调 deliverResult。
+    data_hash_hex = 0x...（32 字节，通常 = keccak256(交付物内容)，即 artifact cid）。
+    """
+    w3 = _get_w3()
+    if not w3 or not ESCROW_PAYMENT or not provider_private_key:
+        return None
+
+    try:
+        escrow = w3.eth.contract(
+            address=Web3.to_checksum_address(ESCROW_PAYMENT),
+            abi=ESCROW_ABI,
+        )
+        acct = Account.from_key(provider_private_key)
+        hx = data_hash_hex if data_hash_hex.startswith("0x") else "0x" + data_hash_hex
+        data_hash = Web3.to_bytes(hexstr=hx)
+        fn = escrow.functions.deliverResult(chain_request_id, data_hash)
+        nonce = w3.eth.get_transaction_count(acct.address)
+        tx = fn.build_transaction({
+            "from": acct.address, "nonce": nonce,
+            "gas": 300000, "gasPrice": w3.eth.gas_price,
+        })
+        signed = w3.eth.account.sign_transaction(tx, provider_private_key)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        return {"tx_hash": tx_hash.hex()}
+    except Exception as e:
+        print(f"[Chain] 交付结果上链失败: {e}")
         return None
 
 
@@ -204,7 +246,7 @@ def register_service_onchain(
                 service_id = logs[0]["args"]["serviceId"]
         except:
             # fallback: 服务总数 - 1
-            service_id = registry.functions.servicesCount().call() - 1
+            service_id = registry.functions.getServiceCount().call() - 1
 
         return {"tx_hash": receipt.transactionHash.hex(), "service_id": service_id}
     except Exception as e:
@@ -213,25 +255,22 @@ def register_service_onchain(
 
 
 def get_services_onchain_by_name(name: str) -> list:
-    """链上按名字查询活跃服务"""
+    """链上按名字查询活跃服务（getService 直接返回 Service[] 结构）"""
     w3, registry = _get_registry()
     if not w3 or not registry:
         return []
     try:
-        # servicesCount 可能没有这个 getter, 用 len(services)
-        ids = registry.functions.getServicesByName(name).call()
+        services = registry.functions.getService(name).call()
         result = []
-        for sid in ids:
-            svc = registry.functions.services(sid).call()
-            if svc[5]:  # isActive
-                result.append({
-                    "id": svc[0],
-                    "provider": svc[1],
-                    "name": svc[2],
-                    "description": svc[3],
-                    "price_wei": svc[4],
-                    "is_active": svc[5],
-                })
+        for svc in services:
+            result.append({
+                "id": svc[0],
+                "provider": svc[1],
+                "name": svc[2],
+                "description": svc[3],
+                "price_wei": svc[4],
+                "is_active": svc[5],
+            })
         return result
     except Exception as e:
         print(f"[Chain] 查询服务失败: {e}")

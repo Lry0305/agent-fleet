@@ -1,0 +1,17 @@
+# AgentFleet Skill — 独立子项目依赖
+# ====================================
+# Provider Agent: CUA-driver 操控 macOS + AgentFleet SDK 支付 + 链上结算
+
+# CUA-driver: macOS 桌面自动化 (浏览器/终端/文件系统)
+cua-driver>=0.1.0
+
+# Web3 链上交互
+web3>=6.0.0
+eth-account>=0.11.0
+
+# AgentFleet SDK (从父项目导入)
+requests>=2.28.0
+
+# CLI
+click>=8.0.0
+rich>=13.0.0

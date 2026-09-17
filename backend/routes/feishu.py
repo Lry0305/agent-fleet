@@ -1,7 +1,7 @@
 """
 飞书机器人 Webhook 路由
 ======================
-接收飞书群 @消息 → 自动解析意图 → AgentPay 支付 → 回复结果。
+接收飞书群 @消息 → 自动解析意图 → AgentFleet 支付 → 回复结果。
 
 不需要 OpenClaw，直接对接飞书开放平台事件回调。
 
@@ -144,7 +144,7 @@ def mock_technical_analysis(symbol: str) -> dict:
 def self_check_status(db=None) -> str:
     """Provider 状态自检"""
     if not db:
-        return "技术面分析大师 — 运行中\n使用 `agentpay-skill serve` 启动本地服务"
+        return "技术面分析大师 — 运行中\n使用 `agentfleet-skill serve` 启动本地服务"
     provider = db.query(AgentModel).filter(
         AgentModel.service_name == "stock_analysis"
     ).first() if db else None
@@ -222,7 +222,7 @@ def feishu_webhook(payload: dict, db: Session = Depends(get_db)):
     if is_provider_bot:
         help_text = (
             f"你好，我是[{bot_name}] 🤖\n\n"
-            "我是 AgentPay 上的技术分析 Provider。\n\n"
+            "我是 AgentFleet 上的技术分析 Provider。\n\n"
             "当前状态：\n"
             f"  • 基准价格: 5 credits/次\n"
             "  • 价格按复杂度阶梯: 简单(2cr) / 标准(5cr) / 深度(10cr)\n"
@@ -237,13 +237,13 @@ def feishu_webhook(payload: dict, db: Session = Depends(get_db)):
         if "安装" in text or "装" in text or "代码" in text:
             help_text = (
                 "📦 本地运行方式：\n\n"
-                "cd agentpay-skill\n"
+                "cd agentfleet-skill\n"
                 "pip install -e .\n"
-                "agentpay-skill onboard --name 技术面分析大师 \\\n"
+                "agentfleet-skill onboard --name 技术面分析大师 \\\n"
                 "  --auth feishu_app \\\n"
                 "  --app-id cli_aad136137db81bda \\\n"
                 "  --app-secret <你的飞书App Secret>\n"
-                "agentpay-skill serve\n\n"
+                "agentfleet-skill serve\n\n"
                 "启动 serve 后我会自动监听订单并执行分析。"
             )
         elif "状态" in text or "status" in text_lower:
@@ -267,7 +267,7 @@ def feishu_webhook(payload: dict, db: Session = Depends(get_db)):
         # 无匹配股票，回复帮助
         help_text = (
             f"我是 [{bot_name}] 🤖\n"
-            f"我是 AgentPay 消费方机器人。\n"
+            f"我是 AgentFleet 消费方机器人。\n"
             f"发消息如「腾讯怎么样」「苹果分析」等\n"
             f"我会自动支付 2-10 credits 调技术面分析大师出报告\n"
             f"支持的股票: {', '.join(sorted(set(k for k, v in STOCK_KEYWORDS.items() if not k.isupper())))}"
@@ -290,7 +290,7 @@ def feishu_webhook(payload: dict, db: Session = Depends(get_db)):
         print("❌ Consumer 或 Provider 未注册")
         return {"status": "agents_not_found"}
 
-    # ── 7. 执行 AgentPay 支付流程 (动态定价) ──
+    # ── 7. 执行 AgentFleet 支付流程 (动态定价) ──
     from backend.models import TransactionModel, TransactionStatus
     from backend.chain import chain_available, lock_funds_on_chain, release_funds_on_chain
 

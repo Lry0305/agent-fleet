@@ -1,5 +1,5 @@
 /**
- * AgentPay 合约测试
+ * AgentFleet 合约测试
  *
  * 测试场景：Alice（金融数据 Agent）注册"财报查询"服务
  *           Bob（股票分析 Agent）付款调用该服务
@@ -9,7 +9,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("AgentPay — 完整支付流程", function () {
+describe("AgentFleet — 完整支付流程", function () {
 
   let registry, escrow, reputation;
   let alice, bob, charlie;

@@ -1,9 +1,12 @@
 web3>=6.0.0
 langgraph>=0.2.0
 eth-account>=0.10.0
-streamlit>=1.28.0
+streamlit>=1.48.0
 fastapi>=0.109.0
 uvicorn>=0.27.0
 sqlalchemy>=2.0.0
 pydantic>=2.0.0
 requests>=2.31.0
+pycryptodome>=3.20.0   # 支付宝沙箱 RSA2 签名/验签（backend/payments.py）
+qrcode[pil]>=7.4.0   # 支付宝沙箱真实支付链接生成可扫二维码（app_pages/recharge.py）
+tiktoken>=0.7.0   # 交付物真实 token 数结算（backend/pricing.py，按用量计费）

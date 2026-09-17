@@ -1,7 +1,7 @@
 {
-  "name": "agent-pay",
+  "name": "agent-fleet",
   "version": "1.0.0",
-  "description": "AgentPay — Decentralized Payment System for AI Agents",
+  "description": "AgentFleet — Decentralized Payment System for AI Agents",
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",

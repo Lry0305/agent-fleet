@@ -6,3 +6,16 @@ node_modules/
 
 # WorkBuddy local cache
 .workbuddy/
+
+# Hardhat chain state / build output
+chain_addresses.json
+artifacts/
+cache/
+
+# Python venv / local db
+.venv/
+*.db
+
+# Agent 工作空间（home 目录 + checkpoint 状态，运行时生成）
+agent_workspaces/
+artifacts_store/

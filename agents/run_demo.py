@@ -1,160 +1,201 @@
 #!/usr/bin/env python3
 """
-AgentPay — 完整流程演示
-=======================
-同时运行 Provider Agent 和 Consumer Agent，
-演示 Agent 间的自动服务发现、托管支付、交付验证全流程。
+AgentFleet — Phase 3 演示：一人公司 agent 群（多任务并行 + 控制面）
+====================================================================
+老板（人，由本脚本模拟其在经营台的操作）往群里充钱 → 派活（DAG：
+3 个 skill 并行 + 1 个串行汇总）→ 中途喊停/恢复 → 全部交付 → 自动结算。
 
-    终端 1: npx hardhat node          (启动本地链)
-    终端 2: npx hardhat deploy ...     (部署合约)
-    终端 3: python agents/run_demo.py  (运行本脚本)
+    终端 1: ./run_all.sh        （启动链 + 后端 + 前端）
+    终端 2: python agents/run_demo.py
 
-或使用一键脚本:
-    ./run_all.sh
+全部走 HTTP API（agentfleet_sdk），不直接碰链。老板是人，不是 agent。
 """
 
-import os
+import json
 import sys
 import threading
 import time
-from agents.config import (
-    RPC_URL,
-    SERVICE_REGISTRY_ADDRESS,
-    ESCROW_PAYMENT_ADDRESS,
-    REPUTATION_ADDRESS,
-    SERVICE_NAME,
-    SERVICE_PRICE_ETH,
-)
-from agents.web3_client import Web3Client
-from agents.provider_agent import run_provider
-from agents.consumer_agent import run_consumer
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 项目根，供 `python agents/run_demo.py` 直接跑
+
+from agents.agentfleet_sdk import AgentFleetClient
+
+BASE = "http://127.0.0.1:8765"
+PRICE = 5.0        # 每个 task 的价格 (credits)
+WORK_DELAY = 1.0   # 每个 skill 步骤的模拟耗时 (秒)
+
+# 演示老板账号（与 backend/config.py 的 DEMO_BOSS_* 一致，后端启动时自动播种）
+DEMO_BOSS_PHONE = "13800000000"
+DEMO_BOSS_PASSWORD = "demo123456"
+
+GOAL = "写一份《AI Agent 群基础设施》调研简报"
 
 
-def check_prerequisites(client: Web3Client):
-    """检查前置条件：合约是否已部署"""
-    print("🔧 检查前置条件...")
-    print(f"   RPC:            {RPC_URL}")
-    print(f"   ServiceRegistry: {SERVICE_REGISTRY_ADDRESS or '(未设置)'}")
-    print(f"   EscrowPayment:   {ESCROW_PAYMENT_ADDRESS or '(未设置)'}")
-    print(f"   Reputation:      {REPUTATION_ADDRESS or '(未设置)'}")
+# ── stub skill（真实分步 + 模拟延迟；skill 本身是用户自有能力，不属于基础设施）──
 
-    if not all([SERVICE_REGISTRY_ADDRESS, ESCROW_PAYMENT_ADDRESS, REPUTATION_ADDRESS]):
-        print("\n❌ 错误：合约地址未设置！")
-        print("   请先运行: npx hardhat run scripts/deploy.js --network localhost")
-        print("   然后将输出的合约地址填入 agents/config.py")
-        return False
+def skill_research(inp):
+    yield "检索 agent 通信 / 编排相关资料…"
+    yield "筛选 3 条关键来源…"
+    yield "提取核心结论…"
 
+def skill_compute(inp):
+    yield "拉取协议动词集做规模测算…"
+    yield "计算并行/串行的时延上限…"
+
+def skill_write(inp):
+    yield "起草大纲…"
+    yield "写正文初稿…"
+    yield "润色收尾…"
+
+def skill_summary(inp):
+    yield "汇总三份产物…"
+    yield "生成最终简报…"
+
+SKILLS = {
+    "research": skill_research,
+    "compute": skill_compute,
+    "write": skill_write,
+    "summary": skill_summary,
+}
+
+
+def run_task(c: AgentFleetClient, m: dict, name: str, skill: str):
+    """provider 收到一条 spawn → 跑 skill（协作式 checkpoint）→ 交付 + 结算。"""
+    p = m["payload"]
+    task_id, tx_id, job_id = p["task_id"], p["tx_id"], p["job_id"]
+    boss_did = m["from"]
+    inp = p.get("input", {})
+    steps = list(SKILLS[skill](inp))
+    state = {
+        "status": "running", "budget": p.get("price", 0),
+        "task_id": task_id, "job_id": job_id, "skill": skill,
+        "step": 0, "steps_total": len(steps), "partial_output": "",
+    }
+
+    print(f"\n▶ [{name}] 收到 spawn  skill={skill}  task={task_id}")
+    c.send_status(task_id, "running", boss_did, job_id)
+    c.save_checkpoint(task_id, state)
+
+    log = lambda s: print(f"    [{name}] {s}")  # noqa: E731
+    for i, step in enumerate(steps, start=1):
+        print(f"    [{name}] {step}")
+        time.sleep(WORK_DELAY)
+        state["step"] = i
+        state["partial_output"] = step
+        c.save_checkpoint(task_id, state)  # 进度落盘（重启可续跑 / 老板可查）
+        s = c.checkpoint(task_id, boss_did, job_id, state, log=log)
+        if s == "cancelled":
+            print(f"    [{name}] ⛔ 收到 cancel，让出（任务已由老板取消）")
+            return
+
+    # 完成：交付产物（内容寻址）→ 通知老板 → 自动结算
+    output = {"skill": skill, "result": f"{name} 完成 {skill}", "input": inp}
+    cid = ""
     try:
-        count = client.get_service_count()
-        req_count = client.get_request_count()
-        print(f"   ✅ 服务数: {count}, 支付请求数: {req_count}")
-        return True
+        delivered = c.deliver(tx_id, json.dumps(output, ensure_ascii=False))
+        cid = delivered.get("cid", "")
     except Exception as e:
-        print(f"   ❌ 合约调用失败: {e}")
-        return False
+        print(f"    [{name}] ⚠️ deliver 失败: {e}")
+    c.send_message(boss_did, "result", {"task_id": task_id, "cid": cid, "output": output}, thread_id=job_id)
+    c.mark_task_done(task_id, cid)
+    state.update({"status": "done", "output_cid": cid})
+    c.save_checkpoint(task_id, state)  # 终态存续
+    print(f"    [{name}] ✅ 交付 + 已结算  (cid={cid[:14]}…, workspace={c.workspace_dir})")
 
 
-def demo_single_flow():
-    """
-    单次完整流程演示：
-    Provider 先注册服务 → Consumer 发起支付 → Provider 交付 → Consumer 确认
-    """
-    print("\n" + "=" * 60)
-    print("  🚀 AgentPay — Agent 间自动支付流程演示")
-    print("=" * 60)
-
-    client = Web3Client()
-
-    if not check_prerequisites(client):
-        sys.exit(1)
-
-    # 查询双方余额
-    from agents.config import ALICE_PRIVATE_KEY, BOB_PRIVATE_KEY
-    alice_acct = client.get_account(ALICE_PRIVATE_KEY)
-    bob_acct = client.get_account(BOB_PRIVATE_KEY)
-
-    alice_bal = client.get_balance(alice_acct["address"])
-    bob_bal = client.get_balance(bob_acct["address"])
-
-    print(f"\n👤 Alice (Provider): {alice_acct['address']}  余额 {alice_bal:.4f} ETH")
-    print(f"👤 Bob   (Consumer): {bob_acct['address']}  余额 {bob_bal:.4f} ETH")
-
-    # ── 并行运行 Provider 和 Consumer ──
-    print(f"\n{'~'*60}")
-    print(f"  📋 场景: Bob 需要 '{SERVICE_NAME}' 服务, 预算 {SERVICE_PRICE_ETH} ETH")
-    print(f"{'~'*60}")
-
-    # Provider 在后台线程运行（先注册，然后等待请求）
-    provider_result = {"state": None, "error": None}
-
-    def provider_thread_fn():
+def worker_loop(c: AgentFleetClient, name: str, skill: str, stop: threading.Event):
+    """后台轮询收件箱：见到未读 spawn → 消费 → 执行。"""
+    processed = set()
+    while not stop.is_set():
         try:
-            provider_result["state"] = run_provider(
-                client, SERVICE_NAME, "查询美股上市公司的财报核心指标", SERVICE_PRICE_ETH
-            )
+            inbox = c.receive(unread_only=True, limit=20)
+            for m in inbox.get("messages", []):
+                if m.get("type") == "spawn" and m["id"] not in processed:
+                    processed.add(m["id"])
+                    c.mark_read(m["id"])
+                    run_task(c, m, name, skill)
         except Exception as e:
-            provider_result["error"] = str(e)
+            print(f"  [{name}] 收件箱错误: {e}")
+        time.sleep(0.5)
 
-    provider_thread = threading.Thread(target=provider_thread_fn, daemon=True)
-    provider_thread.start()
 
-    # 等 Provider 注册完成
-    time.sleep(3)
+def main():
+    print("=" * 64)
+    print("  🏢 AgentFleet — 一人公司 agent 群（Phase 3）")
+    print("=" * 64)
 
-    # Consumer 在主线程运行
-    consumer_state = run_consumer(client, SERVICE_NAME, SERVICE_PRICE_ETH)
+    # ── 老板（人）登录 + 创建 4 个名下 provider agent ──
+    boss = AgentFleetClient(BASE)
+    r = boss.login_boss(DEMO_BOSS_PHONE, DEMO_BOSS_PASSWORD)
+    if r.get("error"):
+        boss.register_boss("演示老板", DEMO_BOSS_PHONE, DEMO_BOSS_PASSWORD)
+        boss.login_boss(DEMO_BOSS_PHONE, DEMO_BOSS_PASSWORD)
+    order = boss.recharge("alipay", 10)          # 充值 ¥10 → +100 credits（mock 支付宝）
+    boss.confirm_recharge(order["order_id"])
+    print(f"\n👔 老板上线：充值 ¥10 → +100 credits，余额 {boss.get_balance()['credit_balance']}")
 
-    # 等待 Provider 线程结束
-    provider_thread.join(timeout=30)
+    roster = [("研究员", "research"), ("计算员", "compute"), ("写手", "write"), ("汇总员", "summary")]
+    providers = []
+    for name, skill in roster:
+        c = AgentFleetClient(BASE)
+        created = boss.create_agent(name, "provider", service_name=skill, price_per_call=PRICE)
+        c.login(api_key=created["api_key"])       # worker 用返回的 api_key 登录
+        c.private_key = created.get("private_key", "")  # 消息签名用（worker 运行时持有）
+        providers.append({"name": name, "skill": skill, "client": c})
+        print(f"🤖 {name} 上线（skill={skill}，要价 {PRICE} credits/次，归老板名下）")
 
-    # ── 打印结果 ──
-    print(f"\n{'='*60}")
-    print(f"  📊 流程结果")
-    print(f"{'='*60}")
+    # ── provider 各自后台运行 ──
+    stop = threading.Event()
+    for p in providers:
+        threading.Thread(target=worker_loop, args=(p["client"], p["name"], p["skill"], stop), daemon=True).start()
+    time.sleep(1)  # 等 worker 就绪
 
-    print(f"\n  Consumer 最终状态:")
-    print(f"    阶段:   {consumer_state.get('phase', 'unknown')}")
-    print(f"    错误:   {consumer_state.get('error') or '无'}")
-    print(f"    已确认: {consumer_state.get('confirmed')}")
-    print(f"    已评价: {consumer_state.get('rated')}")
+    # ── 老板派活：3 并行 + 1 串行（summary 依赖前三个）──
+    by_name = {p["name"]: p["client"]._agent.agent_id for p in providers}
+    tasks = [
+        {"ref": "r", "provider_id": by_name["研究员"], "skill": "research", "input": {"topic": "agent 通信"}, "price": PRICE},
+        {"ref": "c", "provider_id": by_name["计算员"], "skill": "compute",   "input": {"topic": "规模测算"}, "price": PRICE},
+        {"ref": "w", "provider_id": by_name["写手"],   "skill": "write",     "input": {"topic": "正文"},     "price": PRICE},
+        {"ref": "s", "provider_id": by_name["汇总员"], "skill": "summary",   "input": {"sources": ["r", "c", "w"]},
+         "price": PRICE, "depends_on": ["r", "c", "w"]},
+    ]
+    print(f"\n📋 老板派活：「{GOAL}」")
+    print("   DAG：research ∥ compute ∥ write  →  summary（串行汇总）")
+    job = boss.spawn_job(GOAL, tasks, budget=PRICE * 4)
+    job_id = job["job_id"]
+    print(f"   job_id={job_id}")
 
-    if provider_result["state"]:
-        print(f"\n  Provider 最终状态:")
-        print(f"    阶段:   {provider_result['state'].get('phase', 'unknown')}")
-        print(f"    错误:   {provider_result['state'].get('error') or '无'}")
-        print(f"    已确认: {provider_result['state'].get('confirmed')}")
-    elif provider_result["error"]:
-        print(f"\n  Provider 错误: {provider_result['error']}")
+    # ── 中途喊停其中一支（整 job 暂停 → 对应 agent 让出）→ 恢复 ──
+    time.sleep(2.5)
+    print("\n⏸ 老板喊停：暂停任务……")
+    boss.pause_job(job_id)
+    time.sleep(2.0)
+    print("▶ 老板恢复：继续任务……")
+    boss.resume_job(job_id)
 
-    # 最终余额
-    alice_bal2 = client.get_balance(alice_acct["address"])
-    bob_bal2 = client.get_balance(bob_acct["address"])
-    print(f"\n  💰 最终余额:")
-    print(f"    Alice: {alice_bal2:.4f} ETH (变化: {alice_bal2 - alice_bal:+.4f})")
-    print(f"    Bob:   {bob_bal2:.4f} ETH (变化: {bob_bal2 - bob_bal:+.4f})")
+    # ── 等完成 ──
+    while True:
+        j = boss.get_job(job_id)
+        if j["status"] in ("done", "failed", "cancelled"):
+            break
+        time.sleep(1)
+    stop.set()
 
-    # 链上状态
-    try:
-        if consumer_state.get("request_id", 0) > 0 or True:
-            req_count = client.get_request_count()
-            if req_count > 0:
-                req = client.get_request(req_count - 1)
-                state_names = ["Pending", "Delivered", "Confirmed", "Disputed", "Refunded"]
-                print(f"\n  📜 链上记录 (requestId={req[0]}):")
-                print(f"    Consumer:  {req[1][:16]}...")
-                print(f"    Provider:  {req[2][:16]}...")
-                print(f"    Amount:    {client.w3.from_wei(req[3], 'ether')} ETH")
-                print(f"    State:     {state_names[req[5]]}")
-    except Exception:
-        pass
-
-    print(f"\n{'='*60}")
-    if consumer_state.get("phase") == "completed":
-        print(f"  ✅ 流程成功完成！Agent 间自动交易验证通过")
-    else:
-        print(f"  ⚠️ 流程未完全完成，请检查上方日志")
-    print(f"{'='*60}\n")
+    # ── 结果 ──
+    print("\n" + "=" * 64)
+    print("  📊 结果")
+    print("=" * 64)
+    j = boss.get_job(job_id)
+    print(f"  job 状态: {j['status']}  进度 {j['progress']['done']}/{j['progress']['total']}")
+    print(f"  老板余额: {boss.get_balance()['credit_balance']} credits（含初始额度）")
+    for p in providers:
+        bal = p["client"].get_balance()
+        print(f"  {p['name']}: 收入 {bal['total_earned'] - 100:.0f} credits（余额 {bal['credit_balance']}）")
+    kinds = {e["kind"] for e in boss.get_events(limit=100).get("events", [])}
+    print(f"  事件流种类: {sorted(kinds)}")
+    print("\n✅ 全闭环演示完成：充钱 → 派活 → 并行/串行 → 喊停/恢复 → 交付 → 自动结算")
 
 
 if __name__ == "__main__":
-    demo_single_flow()
+    main()

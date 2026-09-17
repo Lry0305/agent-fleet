@@ -2,7 +2,7 @@
 import requests, json, sys
 sys.path.insert(0, '.')
 
-from agents.agentpay_sdk import AgentPayClient
+from agents.agentfleet_sdk import AgentFleetClient
 
 API = 'http://127.0.0.1:8765'
 passed = 0
@@ -146,7 +146,7 @@ print('TEST 4: Python SDK 多认证')
 print('='*60)
 
 # SDK register with feishu
-client = AgentPayClient()
+client = AgentFleetClient()
 r = client.register('SDKFeishuBot', 'provider', auth_method='feishu_app',
     app_id='cli_sdk_002', app_secret='sdk_secret_456',
     service_name='translate', price_per_call=2)
@@ -158,13 +158,13 @@ print(f'  ✅ SDK 飞书登录: {agent.name} ({agent.role}) credits={agent.credi
 passed += 1
 
 # SDK login with openclaw
-client2 = AgentPayClient()
+client2 = AgentFleetClient()
 agent2 = client2.login_with_openclaw(bot_token='bot_token_oc_999')
 print(f'  ✅ SDK OpenClaw登录: {agent2.name} ({agent2.role}) credits={agent2.credit_balance}')
 passed += 1
 
 # SDK login with api_key
-client3 = AgentPayClient()
+client3 = AgentFleetClient()
 agent3 = client3.login(api_key=api_key_provider)
 print(f'  ✅ SDK APIKey登录: {agent3.name} ({agent3.role}) credits={agent3.credit_balance}')
 passed += 1
@@ -185,7 +185,7 @@ print('TEST 5: 飞书 Agent 支付流程')
 print('='*60)
 
 # 飞书 agent (consumer角色) 向 StockBot 支付
-client2_pay = AgentPayClient()
+client2_pay = AgentFleetClient()
 client2_pay.login_with_feishu(app_id='cli_fs_consumer', app_secret='fs_consumer_secret')
 try:
     tx = client2_pay.pay(provider_id=provider_id, amount=5)

@@ -1,5 +1,7 @@
 // deploy.js —— 部署所有合约到本地测试链
 const hre = require("hardhat");
+const fs = require("fs");
+const path = require("path");
 
 async function main() {
   // 1. 部署 ServiceRegistry
@@ -19,6 +21,16 @@ async function main() {
   const rep = await Reputation.deploy();
   await rep.waitForDeployment();
   console.log(`Reputation 部署地址: ${await rep.getAddress()}`);
+
+  // 4. 写入 chain_addresses.json（backend/config.py 与 agents/config.py 启动时自动读取）
+  const addresses = {
+    serviceRegistry: await registry.getAddress(),
+    escrowPayment: await escrow.getAddress(),
+    reputation: await rep.getAddress(),
+  };
+  const outPath = path.join(__dirname, "..", "chain_addresses.json");
+  fs.writeFileSync(outPath, JSON.stringify(addresses, null, 2));
+  console.log(`✅ 合约地址已写入: ${outPath}`);
 }
 
 main().catch((error) => {

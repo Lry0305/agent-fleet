@@ -1,27 +1,38 @@
 """
-AgentPay 全局配置
+AgentFleet 全局配置
 ===============
 使用前请根据你的本地环境修改以下配置。
 """
 
+import json
 import os
+from pathlib import Path
 
 # ── 链配置 ──
 # Hardhat 本地测试链默认 RPC
 RPC_URL = os.getenv("RPC_URL", "http://127.0.0.1:8545")
 CHAIN_ID = int(os.getenv("CHAIN_ID", "31337"))  # Hardhat 默认 chainId
 
-# ── 合约地址（部署到本地链后填入）──
-# 运行 scripts/deploy.js 后会输出地址，复制到这里
-SERVICE_REGISTRY_ADDRESS = os.getenv(
-    "SERVICE_REGISTRY_ADDRESS", "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9"
-)
-ESCROW_PAYMENT_ADDRESS = os.getenv(
-    "ESCROW_PAYMENT_ADDRESS", "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9"
-)
-REPUTATION_ADDRESS = os.getenv(
-    "REPUTATION_ADDRESS", "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707"
-)
+# ── 合约地址（部署到本地链后由 deploy.js 写入 chain_addresses.json，启动时自动读取）──
+# 取值顺序 = 环境变量 → chain_addresses.json → ""
+def _chain_addresses() -> dict:
+    for p in (
+        Path(__file__).resolve().parent.parent / "chain_addresses.json",
+        Path.cwd() / "chain_addresses.json",
+    ):
+        if p.exists():
+            try:
+                return json.loads(p.read_text())
+            except Exception:
+                pass
+    return {}
+
+
+_CHAIN = _chain_addresses()
+
+SERVICE_REGISTRY_ADDRESS = os.getenv("SERVICE_REGISTRY_ADDRESS") or _CHAIN.get("serviceRegistry", "")
+ESCROW_PAYMENT_ADDRESS = os.getenv("ESCROW_PAYMENT_ADDRESS") or _CHAIN.get("escrowPayment", "")
+REPUTATION_ADDRESS = os.getenv("REPUTATION_ADDRESS") or _CHAIN.get("reputation", "")
 
 # ── Agent 钱包私钥（Hardhat 测试账户）──
 # Hardhat node 启动时会打印 20 个测试账户
