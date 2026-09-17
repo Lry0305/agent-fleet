@@ -8,7 +8,20 @@ import os
 import requests
 import streamlit as st
 
-API_BASE = os.getenv("AGENTFLEET_API", "http://127.0.0.1:8765")
+def _api_base() -> str:
+    # 部署时后端地址走 AGENTFLEET_API：优先环境变量（Streamlit Cloud 会把顶级 secrets 注入为
+    # 环境变量），再兜底读 st.secrets（本地 .streamlit/secrets.toml）。st.secrets 在没有任何
+    # secrets 文件时会抛 StreamlitSecretNotFoundError，所以必须兜住，不能裸调。
+    base = os.getenv("AGENTFLEET_API")
+    if base:
+        return base
+    try:
+        return st.secrets.get("AGENTFLEET_API", "http://127.0.0.1:8765")
+    except Exception:
+        return "http://127.0.0.1:8765"
+
+
+API_BASE = _api_base()
 
 
 def api_h():

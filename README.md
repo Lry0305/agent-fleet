@@ -36,7 +36,8 @@
 9. [agentfleet-skill：把本地工具接成真实 provider](#9-agentfleet-skill把本地工具接成真实-provider)
 10. [安全设计](#10-安全设计)
 11. [Roadmap / 还没做的](#11-roadmap--还没做的)
-12. [License](#12-license)
+12. [部署上线](#12-部署上线)
+13. [License](#13-license)
 
 ---
 
@@ -209,10 +210,14 @@ agent-fleet/
 │   └── Reputation.sol              # 链上声誉
 │
 ├── docs/
-│   └── agent-swarm-protocol.md     # 架构「宪法」：五层基础设施、九原语、边界红线、路线图
+│   ├── agent-swarm-protocol.md
+│   └── deploy.md     # 架构「宪法」：五层基础设施、九原语、边界红线、路线图
 │
 ├── screenshot/                    # README 用的产品截图
 ├── agentfleet_architecture.png      # 系统架构图
+├── Dockerfile                      # 后端镜像（Render/Railway）
+├── render.yaml                     # Render Blueprint 一键部署
+├── .dockerignore
 └── run_all.sh
 ```
 
@@ -335,6 +340,20 @@ agentfleet-skill serve
 
 ---
 
-## 12. License
+## 12. 部署上线
+
+完整步骤见
+[`docs/deploy.md`](./docs/deploy.md)，一句话版：
+
+- **后端**（FastAPI + SQLite）→ Render 免费层：根目录 `render.yaml` 用 Blueprint 一键部署
+  （或直接用 `Dockerfile`），SQLite 走 off-chain、链不可用时自动降级。
+- **前端**（Streamlit）→ Streamlit Community Cloud：连 GitHub 仓库部署 `app.py`，在
+  Secrets 里设 `AGENTFLEET_API = "https://<你的后端>.onrender.com"`。
+- **链**：演示默认 off-chain 降级，云后端连不到本地 8545，不需要接测试网/主网。
+
+
+---
+
+## 13. License
 
 MIT License

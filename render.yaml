@@ -1,0 +1,15 @@
+# Render Blueprint — 一键部署 AgentFleet 后端
+# 用法：Render 控制台 → New → Blueprint → 连接 Lry0305/agent-fleet 仓库
+services:
+  - type: web
+    name: agentfleet-api
+    runtime: docker
+    repo: https://github.com/Lry0305/agent-fleet
+    branch: main
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:////data/agentfleet.db
+      - key: PYTHONUNBUFFERED
+        value: "1"
